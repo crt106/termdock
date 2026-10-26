@@ -2316,6 +2316,7 @@ export function resolveStableFederationSessionId(id: string): string | null {
   try { return resolveFrontendSessionId({ sessionId: id, backendSessionId: id }); }
   catch { return null; }
 }
+export function hasStableFederationSession(id:string):boolean { return globalSessionState.sessions.some(session=>session.sessionId===id); }
 
 /** Reattach only an existing, already owned tmux Session after a service restart.
  * The encrypted directory checks the viewer's scope before invoking this. */

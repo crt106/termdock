@@ -104,6 +104,36 @@ async function fixture(runtimeOptions: FederationRuntimeOptions = {}, allowOpenA
 }
 
 describe('federation runtime over real encrypted WebSocket', () => {
+  it('fences older scoped invitations when an integration enables an exclusive writer',async()=>{
+    let access:SessionAccessStore|undefined;const f=await fixture({sessionAccess:()=>access}),guest=await f.connect();
+    f.runtime.store.grant({subjectId:guest.identity.peerId,scope:{kind:'sessions',sessionIds:['source-one']},actions:['session.view','session.terminal-view','session.metadata','session.input','session.resize']});
+    expect((await guest.http('before-exclusive','POST','/api/terminal/one/input'))[0]).toMatchObject({type:'head',status:200});f.input.mockClear();
+    access=new SessionAccessStore(join(f.directory,'exclusive.json'),()=>true);
+    const lease={id:randomUUID(),userId:'operator@example.test',deviceId:guest.identity.peerId,expiresAt:Date.now()+60000};
+    access.update('source-one','integration',{fence:1,lease,exclusive:true});
+    expect((await guest.http('old-invite-write','POST','/api/terminal/one/input'))[0]).toMatchObject({type:'error',error:'AUTHORIZATION_DENIED'});
+    guest.channel.send({type:'session-list',id:'exclusive-inventory'});expect(await guest.take('exclusive-inventory')).toMatchObject({items:[{canWrite:false,canResize:false}]});
+    expect(f.input).not.toHaveBeenCalled();
+    guest.channel.send({type:'session-auth',id:'exclusive-auth',ticket:access.ticket('source-one','integration',guest.identity.peerId)});expect(await guest.take('exclusive-auth')).toMatchObject({type:'result'});
+    expect((await guest.http('current-writer','POST','/api/terminal/one/input'))[0]).toMatchObject({type:'head',status:200});
+    expect(()=>access!.update('source-one','integration',{fence:1,lease,exclusive:false})).toThrow();
+    access.update('source-one','integration',{fence:2,lease:null,exclusive:false});
+  });
+  it('restricts integration reader tickets over Noise even when the device previously had full service access',async()=>{
+    let access:SessionAccessStore|undefined;const f=await fixture({sessionAccess:()=>access}),guest=await f.connect();await guest.pair();
+    access=new SessionAccessStore(join(f.directory,'readers.json'),()=>true);
+    const lease={id:randomUUID(),userId:'viewer@example.test',deviceId:guest.identity.peerId,expiresAt:Date.now()+60000};
+    access.updateReaders('source-one','integration',{fence:1,leases:[lease]});
+    guest.channel.send({type:'session-auth',id:'reader-auth',ticket:access.ticket('source-one','integration',guest.identity.peerId,lease.id)});
+    expect(await guest.take('reader-auth')).toMatchObject({type:'result'});
+    guest.channel.send({type:'session-list',id:'reader-list'});expect(await guest.take('reader-list')).toMatchObject({items:[{canWrite:false,canResize:false,canSendChat:false}]});
+    expect((await guest.http('reader-input','POST','/api/terminal/one/input'))[0]).toMatchObject({type:'error',error:'AUTHORIZATION_DENIED'});
+    guest.channel.send({type:'ws-open',id:'reader-terminal',path:'/api/terminal/one/ws'});await guest.take('reader-terminal','ws-ready');await guest.take('reader-terminal','ws-data');
+    for(const type of ['input','resize']){guest.channel.send({type:'ws-data',id:'reader-terminal',data:JSON.stringify({type,data:'forbidden',cols:1,rows:1})});expect(await guest.take('reader-terminal')).toMatchObject({type:'error',error:'AUTHORIZATION_DENIED'});}
+    expect(f.received).not.toHaveBeenCalled();expect(f.input).not.toHaveBeenCalled();
+    access.updateReaders('source-one','integration',{fence:2,leases:[]});
+    expect((await guest.http('reader-revoked','GET','/api/terminal/one/health'))[0]).toMatchObject({type:'error'});
+  });
   it('uses integration tickets over Noise and keeps existing service grants outside the scoped connection', async () => {
     let access: SessionAccessStore | undefined;
     const f=await fixture({sessionAccess:()=>access}),guest=await f.connect();

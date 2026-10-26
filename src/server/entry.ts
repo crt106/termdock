@@ -37,7 +37,7 @@ import cookieParser from 'cookie-parser';
 import { type SecureContextOptions } from 'tls';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import terminalRoutes, { handleTerminalWebSocket, handleControlWebSocket, resolveStableFederationSessionId, configureSharedChatAccess } from './routes/terminal.js';
+import terminalRoutes, { handleTerminalWebSocket, handleControlWebSocket, resolveStableFederationSessionId, hasStableFederationSession, configureSharedChatAccess } from './routes/terminal.js';
 import androidRoutes, { handleAndroidWebSocket } from './routes/android.js';
 import computerRoutes, { handleComputerWebSocket, stopComputerBridges } from './routes/computer.js';
 import { exitWithStartupFailure } from './utils/startupFailure.js';
@@ -730,7 +730,8 @@ export function startServer(options: ServerOptions = {}): StartServerResult {
       try {
         const port = options.port ?? DEFAULT_PORT;
         integration = new IntegrationRuntime({ directory: path.join(homedir(), '.termdock', 'integration-state', String(port)), socketPath: integrationSocketPath(port), adminToken: options.localApiToken,
-          messages: collaborationStore, taskStore: collaborationTaskStore, tasks: collaborationTasks, peers: collaborationService, sessions: integrationSessionAdapter });
+          messages: collaborationStore, taskStore: collaborationTaskStore, tasks: collaborationTasks, peers: collaborationService, sessions: integrationSessionAdapter,
+          externalSessionExists: hasStableFederationSession,resolveExternalSessionId:resolveStableFederationSessionId,serviceId:runtime.serviceId });
         await integration.listen(); app.locals.integrationRuntime = integration;
         onServerClose(() => { void integration?.close(); });
       } catch { await integration?.close(); console.error('[integrations] Local integration endpoint could not start; existing terminal service remains available'); }

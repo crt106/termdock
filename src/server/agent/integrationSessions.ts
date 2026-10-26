@@ -155,6 +155,7 @@ export class IntegrationSessions {
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   snapshot(): IntegrationSession[] { return structuredClone(this.doc.sessions); }
+  hasSession(id:string):boolean { return this.doc.sessions.some(s=>s.session_id===id); }
   permitsSessionAccess(id: string, principalId: string): boolean {
     const record = this.doc.sessions.find(s => s.session_id === id && s.principal_id === principalId);
     return !!record && !['closed','closing','released','releasing'].includes(record.state);

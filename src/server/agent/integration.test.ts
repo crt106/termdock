@@ -174,12 +174,12 @@ it('retains the old --integration switch and exposes independent principal / cor
   expect(() => parseCollaborationCommand(['--principal', 'bridge', 'session', 'restore', 's', '--idempotency-key', 'k', '--launch-profile', 'other'])).toThrow();
 });
 
-async function runtimeFixture(sessionAdapter?: IntegrationSessionAdapter) {
+async function runtimeFixture(sessionAdapter?: IntegrationSessionAdapter,externalSessionExists?:(id:string)=>boolean) {
   const messages = new CollaborationStore(path.join(dir, 'groups.json')), group = messages.save({ name: 'Local fixture', sessionIds: ['worker'] });
   const taskStore = new CollaborationTaskStore(path.join(dir, 'tasks.json'));
   const peers = { descriptor: () => ({ serviceId }), taskMember: (sessionId: string) => ({ serviceId, sessionId }), taskSession: (m: typeof worker) => m.sessionId } as unknown as CollaborationService;
   const tasks = new CollaborationTaskService(taskStore, messages, peers, () => {});
-  const options = { directory: dir, socketPath: path.join(dir, 'api.sock'), adminToken: 'local-admin', messages, taskStore, tasks, peers, sessions: sessionAdapter ?? adapter().api };
+  const options = { directory: dir, socketPath: path.join(dir, 'api.sock'), adminToken: 'local-admin', messages, taskStore, tasks, peers, sessions: sessionAdapter ?? adapter().api,externalSessionExists };
   const runtime = new IntegrationRuntime(options); await runtime.listen(); resources.push(() => runtime.close());
   const issued = runtime.store.provision(policy(group.id));
   const headers = { 'x-termdock-integration-protocol': '1', 'x-termdock-integration-id': 'bridge', authorization: `Bearer ${issued.token}`, 'Content-Type': 'application/json' };
@@ -1295,4 +1295,20 @@ it('administrator archive CLI checks capability, validates revision/key and expo
     expect(await runIntegrationAdmin(bad, port, 'private-admin', write)).toBe(1);
   }
   expect(output.join('')).not.toContain('private-admin');
+});
+
+it('requires explicit local-admin external-session authority before lending scoped access to existing terminals',async()=>{
+  const f=await runtimeFixture(undefined,id=>id==='external-terminal');
+  const p=f.runtime.store.authenticate('bridge',f.issued.token);p.permissions.push('session.access');f.runtime.store.update(p);
+  const reader={id:randomUUID(),userId:'viewer@example.test',deviceId:'reader111111111111',expiresAt:Date.now()+60000};
+  expect(await f.request('POST','/sessions/external-terminal/access-readers',{fence:1,leases:[reader]})).toMatchObject({status:404});
+  p.permissions.push('session.access.external');f.runtime.store.update(p);
+  expect(await f.request('POST','/sessions/unknown/access-readers',{fence:1,leases:[reader]})).toMatchObject({status:404});
+  expect(await f.request('POST','/sessions/external-terminal/access-readers',{fence:1,leases:[reader]})).toMatchObject({status:200});
+  const issued=await f.request('POST','/sessions/external-terminal/access-ticket',{deviceId:reader.deviceId,readerId:reader.id});
+  expect(issued.status).toBe(200);const claims=f.runtime.sessionAccess.consume(issued.body.ticket,reader.deviceId);
+  expect(claims).toMatchObject({sessionId:'external-terminal',readOnly:true});
+  expect(f.runtime.sessionAccess.allows(claims,reader.deviceId,'session.input','external-terminal')).toBe(false);
+  p.permissions=p.permissions.filter(x=>x!=='session.access.external');f.runtime.store.update(p);
+  expect(f.runtime.sessionAccess.valid(claims,reader.deviceId)).toBe(false);
 });

@@ -175,6 +175,10 @@ export async function createFederationRuntime(app: express.Express, directory: s
         return !!access && (access.allows(sessionClaims, subjectId, action, sessionId)
           || !!sessionId && access.allows(sessionClaims, subjectId, action, stableSessionId(sessionId)));
       }
+      // A locally administered exclusive writer lease also limits older scoped
+      // invitations. Full service administrators retain their maintenance access.
+      if(sessionId && !store.hasFullServiceAccess({subjectId,serviceId}) && (options.sessionAccess?.()?.restrictsNativeWriter(sessionId,action)
+        || options.sessionAccess?.()?.restrictsNativeWriter(stableSessionId(sessionId)||sessionId,action)))return false;
       if (context.relayed && !relayPasswordConfigured()) return false;
       if (open(action) || store.authorize({ subjectId, serviceId, action, sessionId }).allowed) return true;
       // The wire may still carry the transient backend PTY id while the grant

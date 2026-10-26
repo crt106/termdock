@@ -1550,3 +1550,34 @@ at the same final generation succeed. Creation/management keys become small dura
 tombstones: replay cannot resurrect the forgotten session. This removes the
 integration descriptor, not project files, the Agent provider's native history,
 messages or audit events. Apply separate retention policies to those stores.
+
+### Scoped writer and observer tickets
+
+`session_access_readers` adds independent observer leases to the existing local
+session-access API. `POST /sessions/:id/access-readers` takes `{fence, leases}`;
+leases use the same device binding and maximum lifetime as the writer lease.
+`POST /sessions/:id/access-ticket` accepts an optional `readerId`. Observer
+claims permit metadata, chat and terminal viewing only; input, chat send, resize,
+sharing and service administration remain denied on the encrypted server.
+Updating/releasing the writer preserves observers. Removing an observer revokes
+its live channels; reusing its lease ID at a later revision cannot revive an old
+ticket. `GET /sessions/:id/access-state` returns only the writer/reader revision
+numbers so integrations can fence a newly registered resource after reconnect.
+
+The default `session.access` permission continues to cover only the principal's
+own integration sessions. A local administrator may explicitly grant
+`session.access.external` to an integration that manages existing local terminal
+sessions. The runtime must resolve the exact session in its local directory;
+unknown sessions and sessions owned by another integration are rejected. This
+permission does not expose creation, restoration, closing or deletion of external
+sessions. An input-capable web invitation never implies this administration
+permission. Membership and operator arbitration remain the integrator's duty.
+
+The writer update also accepts optional `exclusive: true`. While that integration
+is authorized, older session-scoped invitations can still view the session but
+cannot input, send chat or resize it; only its current session-access writer can.
+Full-service administrators retain maintenance access. Removing exclusivity
+requires a newer writer fence. Omitting the option preserves existing state for
+older integration clients. External-session requests may use a current backend
+alias; access-state returns the locally verified stable `sessionId`, which callers
+must persist and use for resource identity. No session is selected by title.

@@ -28,6 +28,9 @@ export interface IntegrationRuntimeOptions {
   directory: string; socketPath: string; adminToken?: string;
   messages: CollaborationStore; taskStore: CollaborationTaskStore;
   tasks: CollaborationTaskService; peers: CollaborationService; sessions: IntegrationSessionAdapter;
+  externalSessionExists?: (sessionId: string) => boolean;
+  resolveExternalSessionId?: (sessionId:string)=>string|null|undefined;
+  serviceId?:string;
 }
 type Update = { sourceKey: string; sourceVersion: string; eventId?: string; event: Omit<IntegrationEvent, 'event_id' | 'sequence' | 'cursor'> };
 type SyncSource = 'messages' | 'tasks' | 'sessions';
@@ -60,7 +63,8 @@ export class IntegrationRuntime {
     this.store = new IntegrationStore(path.join(options.directory, 'integrations.json'));
     this.sessions = new IntegrationSessions(path.join(options.directory, 'integration-sessions.json'), options.sessions);
     this.sessionAccess = new SessionAccessStore(path.join(options.directory, 'session-access.json'), (id, principalId) => {
-      return this.sessions.permitsSessionAccess(id, principalId) && this.store.permits(principalId, 'session.access');
+      return this.store.permits(principalId,'session.access') && (this.sessions.permitsSessionAccess(id,principalId)
+        || this.canExternalAccess(id,principalId));
     });
     this.releaseBatchFile = path.join(options.directory, 'session-release-batches.json');
     try {
@@ -225,13 +229,19 @@ export class IntegrationRuntime {
     app.get('/sessions/:id', run(async req => { const p = principal(req); this.authorize(p, 'session.read'); return { session: publicIntegrationSession(await this.sessions.get(p, req.params.id)) }; }));
     app.post('/sessions/:id/access', run(async req => {
       const p = principal(req); this.authorize(p, 'session.access');
-      await this.sessions.get(p, req.params.id);
-      return this.sessionAccess.update(req.params.id, p.id, req.body);
+      const id=await this.accessSession(req.params.id,p);return this.sessionAccess.update(id, p.id, req.body);
+    }));
+    app.post('/sessions/:id/access-readers', run(async req => {
+      const p=principal(req); this.authorize(p,'session.access');
+      const id=await this.accessSession(req.params.id,p);return this.sessionAccess.updateReaders(id,p.id,req.body);
+    }));
+    app.get('/sessions/:id/access-state', run(async req => {
+      const p=principal(req);this.authorize(p,'session.access');
+      const id=await this.accessSession(req.params.id,p);return {...this.sessionAccess.revision(id,p.id),sessionId:id};
     }));
     app.post('/sessions/:id/access-ticket', run(async req => {
       const p = principal(req); this.authorize(p, 'session.access');
-      await this.sessions.get(p, req.params.id);
-      return { ticket: this.sessionAccess.ticket(req.params.id, p.id, req.body?.deviceId) };
+      const id=await this.accessSession(req.params.id,p);return { ticket: this.sessionAccess.ticket(id, p.id, req.body?.deviceId,req.body?.readerId) };
     }));
     app.post('/sessions/:id/restore', run(async req => { const p = principal(req); this.authorize(p, 'session.restore'); const session = await this.sessions.restore(p, req.params.id, req.body?.idempotency_key); this.sync(); return { session: publicIntegrationSession(session) }; }));
     app.post('/sessions/:id/retry-cold', run(async req => { const p = principal(req); this.authorize(p, 'session.create'); const session = await this.sessions.retryCold(p, req.params.id, req.body?.generation, req.body?.idempotency_key); this.sync(); return { session: publicIntegrationSession(session) }; }));
@@ -263,9 +273,23 @@ export class IntegrationRuntime {
     app.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(400).json(this.error(new CollaborationError('INVALID_REQUEST', 'Invalid integration request', 400))); });
     this.server = createServer(app);
   }
+  private canExternalAccess(id:string,principalId:string) {
+    return !this.sessions.hasSession(id) && this.store.permits(principalId,'session.access.external') && this.options.externalSessionExists?.(id)===true;
+  }
+  private async accessSession(id:string,p:IntegrationPrincipal) {
+    if(this.canExternalAccess(id,p.id))return id;
+    const stable=this.options.resolveExternalSessionId?.(id);
+    if(stable&&stable!==id) {
+      if(this.canExternalAccess(stable,p.id))return stable;
+      await this.sessions.get(p,stable);return stable;
+    }
+    await this.sessions.get(p,id);return id;
+  }
   capabilities() {
-    return { integration_protocol: INTEGRATION_PROTOCOL, server_version: getTermdockVersion(), local_only: true,
-      integration_principal: true, group_scoped_permissions: true, durable_event_push: true, session_access_tickets: true,
+    return { integration_protocol: INTEGRATION_PROTOCOL, server_version: getTermdockVersion(), local_only: true,service_id:this.options.serviceId,
+      integration_principal: true, group_scoped_permissions: true, durable_event_push: true, session_access_tickets: true, session_access_readers: true,
+      session_access_exclusive:true,session_access_state:true,
+      external_session_access: !!this.options.externalSessionExists,
       event_ack_semantics: 'durable_received', correlated_task_responses: true, accepted_task_comments: true,
       idempotent_session_create: true, exact_session_restore: true, external_validation: false,
       startup_input_conditions: true, session_runtime_release: true, stable_session_identity: true, session_lifecycle_generation: true,
